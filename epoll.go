@@ -11,6 +11,7 @@ import (
 )
 
 type subscriber struct {
+	user_id    int
 	connection *net.Conn
 	room       []string
 }
@@ -42,14 +43,20 @@ func (s *subscription) add_next(new_sub *subscription) {
 }
 
 func (s *subscription) remove_next(conn *net.Conn) {
-	if s.next.conn == conn {
-		s.next = s.next.next
+	if s.next != nil {
+		if s.next.conn == conn {
+			s.next = s.next.next
+		} else {
+			s.next.remove_next(conn)
+		}
 	} else {
-		s.next.remove_next(conn)
+		if s.conn == conn {
+			s.conn = nil
+		}
 	}
 }
 
-func (e *epoll) Add(conn net.Conn, room string) error {
+func (e *epoll) Add(conn net.Conn, room string, id int) error {
 	fd := websocketFD(conn)
 	err := unix.EpollCtl(e.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
@@ -59,6 +66,7 @@ func (e *epoll) Add(conn net.Conn, room string) error {
 	defer e.lock.Unlock()
 
 	e.connections[fd] = subscriber{
+		id,
 		&conn,
 		[]string{room},
 	}

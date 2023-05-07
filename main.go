@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"syscall"
 
 	"github.com/gobwas/ws"
@@ -22,12 +23,16 @@ type subscription struct {
 
 func wsstart(c echo.Context) error {
 	log.Println("Adding Connection")
-	conn, _, _, err := ws.UpgradeHTTP(c.Request(), c.Response())
 	room := c.Param("room")
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		return err
 	}
-	if err := epoller.Add(conn, room); err != nil {
+	conn, _, _, err := ws.UpgradeHTTP(c.Request(), c.Response())
+	if err != nil {
+		return err
+	}
+	if err := epoller.Add(conn, room, id); err != nil {
 		log.Printf("Failed to add connection %v", err)
 		conn.Close()
 	}
@@ -60,8 +65,19 @@ func main() {
 		return c.String(http.StatusOK, "Hello, World!")
 	})
 
-	e.GET("/ws/:room", wsstart)
+	e.GET("/ws/:room/:id", wsstart)
 	e.Logger.Fatal(e.Start(":6969"))
+}
+
+func (s *subscription) send_msg_in_room(op ws.OpCode, msg []byte) {
+	err := wsutil.WriteServerMessage(*s.conn, op, msg)
+	if err != nil {
+		log.Printf("Failed to send %v", err)
+	}
+
+	if s.next != nil {
+		s.next.send_msg_in_room(op, msg)
+	}
 }
 
 func Start() {
@@ -75,14 +91,22 @@ func Start() {
 			if subs.connection == nil {
 				break
 			}
-			if msg, _, err := wsutil.ReadClientData(*subs.connection); err != nil {
+			if msg, op, err := wsutil.ReadClientData(*subs.connection); err != nil {
+				fmt.Println("Here!")
+				fmt.Println(err)
 				if err := epoller.Remove(subs); err != nil {
 					log.Printf("Failed to remove %v", err)
 				}
 				con := *subs.connection
 				con.Close()
 			} else {
-				log.Printf("msg: %d %s", epoller.fd, string(msg))
+				for _, room := range subs.room {
+					if hub[room] != nil {
+						hub[room].send_msg_in_room(op, msg)
+						log.Printf("msg: %d %s", epoller.fd, string(msg))
+					}
+				}
+
 			}
 		}
 	}
