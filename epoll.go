@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"reflect"
 	"sync"
@@ -18,7 +17,7 @@ type subscriber struct {
 
 type epoll struct {
 	fd          int
-	connections map[int]subscriber
+	connections map[int]*subscriber
 	lock        *sync.RWMutex
 }
 
@@ -30,7 +29,7 @@ func MkEpoll() (*epoll, error) {
 	return &epoll{
 		fd:          fd,
 		lock:        &sync.RWMutex{},
-		connections: make(map[int]subscriber),
+		connections: make(map[int]*subscriber),
 	}, nil
 }
 
@@ -43,15 +42,15 @@ func (s *subscription) add_next(new_sub *subscription) {
 }
 
 func (s *subscription) remove_next(conn *net.Conn) {
-	if s.next != nil {
-		if s.next.conn == conn {
-			s.next = s.next.next
+	if s != nil {
+		if s.subs.connection == conn {
+			s = nil
 		} else {
-			s.next.remove_next(conn)
-		}
-	} else {
-		if s.conn == conn {
-			s.conn = nil
+			if s.next.subs.connection == conn {
+				s.next = s.next.next
+			} else {
+				s.next.remove_next(conn)
+			}
 		}
 	}
 }
@@ -65,23 +64,20 @@ func (e *epoll) Add(conn net.Conn, room string, id int) error {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	e.connections[fd] = subscriber{
+	subscriber := subscriber{
 		id,
 		&conn,
 		[]string{room},
 	}
-	fmt.Println("Before")
-	fmt.Println(room)
+	e.connections[fd] = &subscriber
 
-	subs := subscription{&conn, nil}
+	subs := subscription{&subscriber, nil}
 	if hub[room] == nil {
 		hub[room] = &subs
 	} else {
 		hub[room].add_next(&subs)
 	}
 
-	fmt.Println(room)
-	fmt.Println(hub[room])
 	return nil
 }
 
@@ -96,7 +92,6 @@ func (e *epoll) Remove(sub subscriber) error {
 	for _, room := range sub.room {
 		hub[room].remove_next(sub.connection)
 
-		fmt.Println(hub[room])
 	}
 	delete(e.connections, fd)
 
@@ -114,7 +109,7 @@ func (e *epoll) Wait() ([]subscriber, error) {
 	var connections []subscriber
 	for i := 0; i < n; i++ {
 		conn := e.connections[int(events[i].Fd)]
-		connections = append(connections, conn)
+		connections = append(connections, *conn)
 	}
 	return connections, nil
 }

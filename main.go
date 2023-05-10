@@ -1,9 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"syscall"
@@ -17,12 +17,12 @@ var epoller *epoll
 var hub map[string]*subscription
 
 type subscription struct {
-	conn *net.Conn
+	subs *subscriber
 	next *subscription
 }
 
 func wsstart(c echo.Context) error {
-	log.Println("Adding Connection")
+	// log.Println("Adding Connection")
 	room := c.Param("room")
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -33,10 +33,10 @@ func wsstart(c echo.Context) error {
 		return err
 	}
 	if err := epoller.Add(conn, room, id); err != nil {
-		log.Printf("Failed to add connection %v", err)
+		// log.Printf("Failed to add connection %v", err)
 		conn.Close()
 	}
-	fmt.Println(conn)
+	// fmt.Println(conn)
 	return nil
 }
 
@@ -70,21 +70,32 @@ func main() {
 }
 
 func (s *subscription) send_msg_in_room(op ws.OpCode, msg []byte) {
-	err := wsutil.WriteServerMessage(*s.conn, op, msg)
-	if err != nil {
-		log.Printf("Failed to send %v", err)
-	}
+	if *s.subs.connection != nil {
+		err := wsutil.WriteServerMessage(*s.subs.connection, op, msg)
+		if err != nil {
+			log.Printf("Failed to send %v", err)
+		}
 
-	if s.next != nil {
-		s.next.send_msg_in_room(op, msg)
+		if s.next != nil {
+			s.next.send_msg_in_room(op, msg)
+		}
 	}
+}
+
+func unmarshal_msg(room string, msg []byte, op ws.OpCode, subs subscriber) {
+	msg_un_mar := map[string]string{}
+	json.Unmarshal(msg, &msg_un_mar)
+	if msg_un_mar["message"] == "" {
+		return
+	}
+	go hub[room].send_msg_in_room(op, []byte(fmt.Sprintf("{ \"user_id\": %d, \"msg\":\"%s\"}", subs.user_id, msg_un_mar["message"])))
 }
 
 func Start() {
 	for {
 		subscriptions, err := epoller.Wait()
 		if err != nil {
-			log.Printf("Failed to epoll wait %v", err)
+			// log.Printf("Failed to epoll wait %v", err)
 			continue
 		}
 		for _, subs := range subscriptions {
@@ -92,8 +103,6 @@ func Start() {
 				break
 			}
 			if msg, op, err := wsutil.ReadClientData(*subs.connection); err != nil {
-				fmt.Println("Here!")
-				fmt.Println(err)
 				if err := epoller.Remove(subs); err != nil {
 					log.Printf("Failed to remove %v", err)
 				}
@@ -102,8 +111,8 @@ func Start() {
 			} else {
 				for _, room := range subs.room {
 					if hub[room] != nil {
-						hub[room].send_msg_in_room(op, msg)
-						log.Printf("msg: %d %s", epoller.fd, string(msg))
+						go unmarshal_msg(room, msg, op, subs)
+						// log.Printf("msg: %d %s", epoller.fd, string(msg))
 					}
 				}
 
